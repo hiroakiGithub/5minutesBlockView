@@ -59,18 +59,17 @@
   .grid {
     display: flex;
     flex-wrap: wrap;
-    gap: 6px;
+    gap: 4px;
     margin-bottom: 20px;
   }
   .cell {
-    flex: 1 1 56px;
-    min-width: 56px;
+    flex: 0 0 auto;
+    width: 38px;
     background: var(--future);
     border: 1px solid var(--line);
-    border-radius: 8px;
-    padding: 8px 4px;
+    border-radius: 6px;
+    padding: 4px 2px;
     text-align: center;
-    font-size: 12px;
   }
   .cell.done { background: var(--done); color: var(--muted); }
   .cell.now {
@@ -79,8 +78,8 @@
     color: #0f172a;
     font-weight: 700;
   }
-  .cell .n { font-size: 16px; font-weight: 700; }
-  .cell .t { font-size: 10px; opacity: .8; }
+  .cell .n { font-size: 12px; font-weight: 700; line-height: 1.2; }
+  .cell .t { font-size: 8px; opacity: .7; }
 
   .settings {
     background: var(--panel);
@@ -131,7 +130,13 @@
       <label for="end">終了時刻</label>
       <input type="time" id="end" value="18:00">
     </div>
-    <p class="hint">時刻を入力すると自動で反映されます（スタートボタンは不要）。毎時0分から5分刻みでブロックを区切り、最初の端数も1ブロック目として数えます。</p>
+    <div class="row">
+      <label for="breakOn" style="width:auto"><input type="checkbox" id="breakOn"> 休憩</label>
+      <input type="time" id="breakStart" value="12:00">
+      <span style="color:var(--muted)">〜</span>
+      <input type="time" id="breakEnd" value="13:00">
+    </div>
+    <p class="hint">時刻を入力すると自動で反映されます（スタートボタンは不要）。毎時0分から5分刻みでブロックを区切り、最初の端数も1ブロック目として数えます。休憩時間中はブロックを作らず、休憩明けから次のブロックが始まります。</p>
     <p class="err" id="err"></p>
   </div>
 </div>
@@ -139,17 +144,24 @@
 <script>
   const $ = (id) => document.getElementById(id);
   const startEl = $("start"), endEl = $("end"), errEl = $("err");
+  const breakOnEl = $("breakOn"), breakStartEl = $("breakStart"), breakEndEl = $("breakEnd");
 
   // 設定の保存・復元
   const saved = JSON.parse(localStorage.getItem("blockView") || "{}");
   if (saved.start) startEl.value = saved.start;
   if (saved.end) endEl.value = saved.end;
+  if (saved.breakOn) breakOnEl.checked = saved.breakOn;
+  if (saved.breakStart) breakStartEl.value = saved.breakStart;
+  if (saved.breakEnd) breakEndEl.value = saved.breakEnd;
 
   function saveSettings() {
-    localStorage.setItem("blockView", JSON.stringify({ start: startEl.value, end: endEl.value }));
+    localStorage.setItem("blockView", JSON.stringify({
+      start: startEl.value, end: endEl.value,
+      breakOn: breakOnEl.checked, breakStart: breakStartEl.value, breakEnd: breakEndEl.value
+    }));
   }
-  startEl.addEventListener("change", () => { saveSettings(); render(); });
-  endEl.addEventListener("change", () => { saveSettings(); render(); });
+  [startEl, endEl, breakOnEl, breakStartEl, breakEndEl].forEach(el =>
+    el.addEventListener("change", () => { saveSettings(); render(); }));
 
   // "HH:MM" -> 分（その日の通算分）
   function toMin(str) {
@@ -163,13 +175,30 @@
     return h + ":" + String(mm).padStart(2, "0");
   }
 
-  // ブロックの境界を生成（毎時0分の5分刻みグリッドに合わせ、最初の端数を1ブロック目に）
-  function buildBoundaries(start, end) {
-    const bounds = [start];
-    let b = Math.floor(start / 5) * 5 + 5; // 開始直後の最初のグリッド境界
-    while (b < end) { bounds.push(b); b += 5; }
-    bounds.push(end);
-    return bounds;
+  // 1区間を5分刻みグリッドに合わせてブロック化（最初の端数も1ブロック目）
+  function segmentBlocks(s, e) {
+    const bounds = [s];
+    let b = Math.floor(s / 5) * 5 + 5; // 開始直後の最初のグリッド境界
+    while (b < e) { bounds.push(b); b += 5; }
+    bounds.push(e);
+    const blocks = [];
+    for (let i = 0; i < bounds.length - 1; i++) blocks.push({ start: bounds[i], end: bounds[i + 1] });
+    return blocks;
+  }
+
+  // 休憩を挟んで全ブロックを生成（休憩中はブロックを作らない）
+  function buildBlocks(start, end) {
+    let bs = null, be = null;
+    if (breakOnEl.checked) {
+      bs = toMin(breakStartEl.value);
+      be = toMin(breakEndEl.value);
+      if (be <= bs || be <= start || bs >= end) { bs = null; be = null; } // 無効・範囲外は無視
+      else { bs = Math.max(bs, start); be = Math.min(be, end); }
+    }
+    const segments = (bs !== null) ? [[start, bs], [be, end]] : [[start, end]];
+    let blocks = [];
+    for (const [s, e] of segments) if (s < e) blocks = blocks.concat(segmentBlocks(s, e));
+    return { blocks, breakStart: bs, breakEnd: be };
   }
 
   function render() {
@@ -187,19 +216,21 @@
     }
     errEl.textContent = "";
 
-    const bounds = buildBoundaries(start, end);
-    const total = bounds.length - 1;
+    const { blocks, breakStart, breakEnd } = buildBlocks(start, end);
+    const total = blocks.length;
 
     const now = new Date();
     const nowMin = now.getHours() * 60 + now.getMinutes() + now.getSeconds() / 60;
 
-    // 現在のブロック番号（1始まり）。範囲外は0。
+    // 現在のブロック番号（1始まり）。どのブロックにも当たらなければ0。
     let cur = 0;
     for (let i = 0; i < total; i++) {
-      if (nowMin >= bounds[i] && nowMin < bounds[i + 1]) { cur = i + 1; break; }
+      if (nowMin >= blocks[i].start && nowMin < blocks[i].end) { cur = i + 1; break; }
     }
 
     $("totalBlock").textContent = " / " + total;
+
+    const inBreak = breakStart !== null && nowMin >= breakStart && nowMin < breakEnd;
 
     if (nowMin < start) {
       $("curBlock").textContent = "-";
@@ -209,11 +240,19 @@
       $("curBlock").textContent = "終";
       $("curRange").textContent = fmt(start) + " 〜 " + fmt(end);
       $("status").textContent = "終了しました";
-    } else {
+    } else if (inBreak) {
+      $("curBlock").textContent = "休";
+      $("curRange").textContent = fmt(breakStart) + " 〜 " + fmt(breakEnd);
+      $("status").textContent = "休憩中（あと 約" + Math.ceil(breakEnd - nowMin) + " 分）";
+    } else if (cur) {
       $("curBlock").textContent = cur;
-      $("curRange").textContent = fmt(bounds[cur - 1]) + " 〜 " + fmt(bounds[cur]);
-      const remain = Math.ceil(bounds[cur] - nowMin);
+      $("curRange").textContent = fmt(blocks[cur - 1].start) + " 〜 " + fmt(blocks[cur - 1].end);
+      const remain = Math.ceil(blocks[cur - 1].end - nowMin);
       $("status").textContent = "このブロックの残り 約" + remain + " 分";
+    } else {
+      $("curBlock").textContent = "-";
+      $("curRange").textContent = fmt(start) + " 〜 " + fmt(end);
+      $("status").textContent = "";
     }
 
     // グリッド描画
@@ -222,11 +261,11 @@
     for (let i = 0; i < total; i++) {
       const cell = document.createElement("div");
       cell.className = "cell";
-      if (cur && i + 1 < cur) cell.classList.add("done");
-      else if (cur && i + 1 === cur) cell.classList.add("now");
-      else if (nowMin >= end) cell.classList.add("done");
+      if (cur && i + 1 === cur) cell.classList.add("now");
+      else if (blocks[i].end <= nowMin) cell.classList.add("done");
+      cell.title = fmt(blocks[i].start) + "〜" + fmt(blocks[i].end);
       cell.innerHTML = '<div class="n">' + (i + 1) + '</div>' +
-                       '<div class="t">' + fmt(bounds[i]) + '</div>';
+                       '<div class="t">' + fmt(blocks[i].start) + '</div>';
       grid.appendChild(cell);
     }
   }
