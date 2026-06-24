@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>5分ブロックビュー</title>
+<style>
+  :root {
+    --bg: #0f172a;
+    --panel: #1e293b;
+    --line: #334155;
+    --text: #e2e8f0;
+    --muted: #94a3b8;
+    --accent: #38bdf8;
+    --done: #475569;
+    --future: #1e293b;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: "Segoe UI", "Hiragino Kaku Gothic ProN", "Meiryo", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    display: flex;
+    justify-content: center;
+    padding: 24px 16px;
+  }
+  .wrap { width: 100%; max-width: 640px; }
+  h1 { font-size: 20px; margin: 0 0 16px; font-weight: 600; }
+  .clock { color: var(--muted); font-size: 14px; margin-bottom: 16px; }
+  .clock b { color: var(--text); font-variant-numeric: tabular-nums; }
+
+  .hero {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 16px;
+    padding: 28px 24px;
+    text-align: center;
+    margin-bottom: 20px;
+  }
+  .hero .label { color: var(--muted); font-size: 14px; }
+  .hero .big {
+    font-size: 64px;
+    font-weight: 700;
+    line-height: 1.1;
+    margin: 4px 0;
+    font-variant-numeric: tabular-nums;
+  }
+  .hero .big .total { color: var(--muted); font-size: 32px; }
+  .hero .big .accent { color: var(--accent); }
+  .hero .range {
+    color: var(--muted);
+    font-size: 15px;
+    font-variant-numeric: tabular-nums;
+  }
+  .hero .status { margin-top: 10px; font-size: 14px; color: var(--accent); }
+
+  .grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-bottom: 20px;
+  }
+  .cell {
+    flex: 1 1 56px;
+    min-width: 56px;
+    background: var(--future);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 8px 4px;
+    text-align: center;
+    font-size: 12px;
+  }
+  .cell.done { background: var(--done); color: var(--muted); }
+  .cell.now {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #0f172a;
+    font-weight: 700;
+  }
+  .cell .n { font-size: 16px; font-weight: 700; }
+  .cell .t { font-size: 10px; opacity: .8; }
+
+  .settings {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 16px;
+    padding: 16px 20px;
+  }
+  .settings .row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 12px;
+  }
+  .settings label { width: 80px; color: var(--muted); font-size: 14px; }
+  .settings input[type="time"] {
+    background: var(--bg);
+    border: 1px solid var(--line);
+    color: var(--text);
+    border-radius: 8px;
+    padding: 8px 10px;
+    font-size: 16px;
+    font-family: inherit;
+  }
+  .settings .hint { color: var(--muted); font-size: 12px; margin: 0; }
+  .err { color: #f87171; font-size: 13px; margin: 4px 0 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>5分ブロックビュー</h1>
+  <div class="clock">現在時刻：<b id="now">--:--:--</b></div>
+
+  <div class="hero">
+    <div class="label">現在のブロック</div>
+    <div class="big"><span class="accent" id="curBlock">-</span><span class="total" id="totalBlock"> / -</span></div>
+    <div class="range" id="curRange">--:-- 〜 --:--</div>
+    <div class="status" id="status"></div>
+  </div>
+
+  <div class="grid" id="grid"></div>
+
+  <div class="settings">
+    <div class="row">
+      <label for="start">開始時刻</label>
+      <input type="time" id="start" value="09:00">
+    </div>
+    <div class="row">
+      <label for="end">終了時刻</label>
+      <input type="time" id="end" value="18:00">
+    </div>
+    <p class="hint">時刻を入力すると自動で反映されます（スタートボタンは不要）。毎時0分から5分刻みでブロックを区切り、最初の端数も1ブロック目として数えます。</p>
+    <p class="err" id="err"></p>
+  </div>
+</div>
+
+<script>
+  const $ = (id) => document.getElementById(id);
+  const startEl = $("start"), endEl = $("end"), errEl = $("err");
+
+  // 設定の保存・復元
+  const saved = JSON.parse(localStorage.getItem("blockView") || "{}");
+  if (saved.start) startEl.value = saved.start;
+  if (saved.end) endEl.value = saved.end;
+
+  function saveSettings() {
+    localStorage.setItem("blockView", JSON.stringify({ start: startEl.value, end: endEl.value }));
+  }
+  startEl.addEventListener("change", () => { saveSettings(); render(); });
+  endEl.addEventListener("change", () => { saveSettings(); render(); });
+
+  // "HH:MM" -> 分（その日の通算分）
+  function toMin(str) {
+    const [h, m] = str.split(":").map(Number);
+    return h * 60 + m;
+  }
+  // 分 -> "H:MM"
+  function fmt(min) {
+    const m = ((min % 1440) + 1440) % 1440;
+    const h = Math.floor(m / 60), mm = m % 60;
+    return h + ":" + String(mm).padStart(2, "0");
+  }
+
+  // ブロックの境界を生成（毎時0分の5分刻みグリッドに合わせ、最初の端数を1ブロック目に）
+  function buildBoundaries(start, end) {
+    const bounds = [start];
+    let b = Math.floor(start / 5) * 5 + 5; // 開始直後の最初のグリッド境界
+    while (b < end) { bounds.push(b); b += 5; }
+    bounds.push(end);
+    return bounds;
+  }
+
+  function render() {
+    const start = toMin(startEl.value);
+    const end = toMin(endEl.value);
+
+    if (end <= start) {
+      errEl.textContent = "終了時刻は開始時刻より後に設定してください。";
+      $("grid").innerHTML = "";
+      $("curBlock").textContent = "-";
+      $("totalBlock").textContent = " / -";
+      $("curRange").textContent = "--:-- 〜 --:--";
+      $("status").textContent = "";
+      return;
+    }
+    errEl.textContent = "";
+
+    const bounds = buildBoundaries(start, end);
+    const total = bounds.length - 1;
+
+    const now = new Date();
+    const nowMin = now.getHours() * 60 + now.getMinutes() + now.getSeconds() / 60;
+
+    // 現在のブロック番号（1始まり）。範囲外は0。
+    let cur = 0;
+    for (let i = 0; i < total; i++) {
+      if (nowMin >= bounds[i] && nowMin < bounds[i + 1]) { cur = i + 1; break; }
+    }
+
+    $("totalBlock").textContent = " / " + total;
+
+    if (nowMin < start) {
+      $("curBlock").textContent = "-";
+      $("curRange").textContent = fmt(start) + " 〜 " + fmt(end);
+      $("status").textContent = "開始前です（あと " + Math.ceil(start - nowMin) + " 分）";
+    } else if (nowMin >= end) {
+      $("curBlock").textContent = "終";
+      $("curRange").textContent = fmt(start) + " 〜 " + fmt(end);
+      $("status").textContent = "終了しました";
+    } else {
+      $("curBlock").textContent = cur;
+      $("curRange").textContent = fmt(bounds[cur - 1]) + " 〜 " + fmt(bounds[cur]);
+      const remain = Math.ceil(bounds[cur] - nowMin);
+      $("status").textContent = "このブロックの残り 約" + remain + " 分";
+    }
+
+    // グリッド描画
+    const grid = $("grid");
+    grid.innerHTML = "";
+    for (let i = 0; i < total; i++) {
+      const cell = document.createElement("div");
+      cell.className = "cell";
+      if (cur && i + 1 < cur) cell.classList.add("done");
+      else if (cur && i + 1 === cur) cell.classList.add("now");
+      else if (nowMin >= end) cell.classList.add("done");
+      cell.innerHTML = '<div class="n">' + (i + 1) + '</div>' +
+                       '<div class="t">' + fmt(bounds[i]) + '</div>';
+      grid.appendChild(cell);
+    }
+  }
+
+  function tick() {
+    const now = new Date();
+    $("now").textContent =
+      String(now.getHours()).padStart(2, "0") + ":" +
+      String(now.getMinutes()).padStart(2, "0") + ":" +
+      String(now.getSeconds()).padStart(2, "0");
+    render();
+  }
+
+  tick();
+  setInterval(tick, 1000);
+</script>
+</body>
+</html>
