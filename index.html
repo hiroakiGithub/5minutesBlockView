@@ -56,30 +56,30 @@
   }
   .hero .status { margin-top: 10px; font-size: 14px; color: var(--accent); }
 
-  .grid {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 4px;
-    margin-bottom: 20px;
-  }
-  .cell {
-    flex: 0 0 auto;
-    width: 38px;
-    background: var(--future);
+  .gauge-wrap { margin-bottom: 20px; }
+  .gauge {
+    height: 22px;
+    background: var(--panel);
     border: 1px solid var(--line);
-    border-radius: 6px;
-    padding: 4px 2px;
-    text-align: center;
+    border-radius: 999px;
+    overflow: hidden;
   }
-  .cell.done { background: var(--done); color: var(--muted); }
-  .cell.now {
+  .gauge-fill {
+    height: 100%;
+    width: 0%;
     background: var(--accent);
-    border-color: var(--accent);
-    color: #0f172a;
-    font-weight: 700;
+    border-radius: 999px;
+    transition: width .3s ease;
   }
-  .cell .n { font-size: 12px; font-weight: 700; line-height: 1.2; }
-  .cell .t { font-size: 8px; opacity: .7; }
+  .gauge-label {
+    margin-top: 6px;
+    font-size: 13px;
+    color: var(--muted);
+    display: flex;
+    justify-content: space-between;
+    font-variant-numeric: tabular-nums;
+  }
+  .gauge-label b { color: var(--text); font-weight: 600; }
 
   .settings {
     background: var(--panel);
@@ -119,7 +119,10 @@
     <div class="status" id="status"></div>
   </div>
 
-  <div class="grid" id="grid"></div>
+  <div class="gauge-wrap">
+    <div class="gauge"><div class="gauge-fill" id="gaugeFill"></div></div>
+    <div class="gauge-label"><span>消費時間</span><span><b id="gaugePct">0%</b></span></div>
+  </div>
 
   <div class="settings">
     <div class="row">
@@ -201,73 +204,84 @@
     return { blocks, breakStart: bs, breakEnd: be };
   }
 
+  // 開始前のマイナス番号（5分グリッド、0は飛ばす）
+  function negBlock(t, start) {
+    const g0 = Math.floor(start / 5) * 5; // 開始直前のグリッド境界
+    if (start === g0) return -Math.ceil((start - t) / 5);      // 開始が5分刻みちょうど
+    if (t >= g0) return -1;                                    // 開始を含むグリッドの前半（端数）
+    return -1 - Math.ceil((g0 - t) / 5);
+  }
+
   function render() {
     const start = toMin(startEl.value);
     const end = toMin(endEl.value);
 
     if (end <= start) {
       errEl.textContent = "終了時刻は開始時刻より後に設定してください。";
-      $("grid").innerHTML = "";
       $("curBlock").textContent = "-";
       $("totalBlock").textContent = " / -";
       $("curRange").textContent = "--:-- 〜 --:--";
       $("status").textContent = "";
+      $("gaugeFill").style.width = "0%";
+      $("gaugePct").textContent = "0%";
       return;
     }
     errEl.textContent = "";
 
     const { blocks, breakStart, breakEnd } = buildBlocks(start, end);
     const total = blocks.length;
+    const g = (x) => Math.floor(x / 5);
 
     const now = new Date();
     const nowMin = now.getHours() * 60 + now.getMinutes() + now.getSeconds() / 60;
 
-    // 現在のブロック番号（1始まり）。どのブロックにも当たらなければ0。
-    let cur = 0;
-    for (let i = 0; i < total; i++) {
-      if (nowMin >= blocks[i].start && nowMin < blocks[i].end) { cur = i + 1; break; }
-    }
-
     $("totalBlock").textContent = " / " + total;
 
     const inBreak = breakStart !== null && nowMin >= breakStart && nowMin < breakEnd;
+    let curText, rangeText, statusText;
 
-    if (nowMin < start) {
-      $("curBlock").textContent = "-";
-      $("curRange").textContent = fmt(start) + " 〜 " + fmt(end);
-      $("status").textContent = "開始前です（あと " + Math.ceil(start - nowMin) + " 分）";
-    } else if (nowMin >= end) {
-      $("curBlock").textContent = "終";
-      $("curRange").textContent = fmt(start) + " 〜 " + fmt(end);
-      $("status").textContent = "終了しました";
-    } else if (inBreak) {
-      $("curBlock").textContent = "休";
-      $("curRange").textContent = fmt(breakStart) + " 〜 " + fmt(breakEnd);
-      $("status").textContent = "休憩中（あと 約" + Math.ceil(breakEnd - nowMin) + " 分）";
-    } else if (cur) {
-      $("curBlock").textContent = cur;
-      $("curRange").textContent = fmt(blocks[cur - 1].start) + " 〜 " + fmt(blocks[cur - 1].end);
-      const remain = Math.ceil(blocks[cur - 1].end - nowMin);
-      $("status").textContent = "このブロックの残り 約" + remain + " 分";
+    if (inBreak) {
+      curText = "休";
+      rangeText = fmt(breakStart) + " 〜 " + fmt(breakEnd);
+      statusText = "休憩中（あと 約" + Math.ceil(breakEnd - nowMin) + " 分）";
+    } else if (nowMin < start) {
+      // 開始前：マイナス表示（午前0時で開始時間からのカウントに戻る）
+      curText = negBlock(nowMin, start);
+      const gs = Math.floor(nowMin / 5) * 5;
+      rangeText = fmt(gs) + " 〜 " + fmt(gs + 5);
+      statusText = "開始まで 約" + Math.ceil(start - nowMin) + " 分";
     } else {
-      $("curBlock").textContent = "-";
-      $("curRange").textContent = fmt(start) + " 〜 " + fmt(end);
-      $("status").textContent = "";
+      // 開始以降：通し番号（休憩分を差し引き、終了後も継続）
+      let n = g(nowMin) - g(start) + 1;
+      if (breakStart !== null && nowMin >= breakEnd) n -= (g(breakEnd) - g(breakStart));
+      curText = n;
+      if (nowMin < end && n >= 1 && n <= total) {
+        rangeText = fmt(blocks[n - 1].start) + " 〜 " + fmt(blocks[n - 1].end);
+        statusText = "このブロックの残り 約" + Math.ceil(blocks[n - 1].end - nowMin) + " 分";
+      } else {
+        const gs = Math.floor(nowMin / 5) * 5;
+        rangeText = fmt(gs) + " 〜 " + fmt(gs + 5);
+        statusText = "終了時刻を超過（+" + Math.ceil(nowMin - end) + " 分）";
+      }
     }
 
-    // グリッド描画
-    const grid = $("grid");
-    grid.innerHTML = "";
-    for (let i = 0; i < total; i++) {
-      const cell = document.createElement("div");
-      cell.className = "cell";
-      if (cur && i + 1 === cur) cell.classList.add("now");
-      else if (blocks[i].end <= nowMin) cell.classList.add("done");
-      cell.title = fmt(blocks[i].start) + "〜" + fmt(blocks[i].end);
-      cell.innerHTML = '<div class="n">' + (i + 1) + '</div>' +
-                       '<div class="t">' + fmt(blocks[i].start) + '</div>';
-      grid.appendChild(cell);
-    }
+    $("curBlock").textContent = curText;
+    $("curRange").textContent = rangeText;
+    $("status").textContent = statusText;
+
+    // ゲージ（休憩を除いた実作業時間の消費率）
+    const breakDur = (breakStart !== null) ? (breakEnd - breakStart) : 0;
+    const totalDur = (end - start) - breakDur;
+    let consumed;
+    if (nowMin <= start) consumed = 0;
+    else if (nowMin >= end) consumed = totalDur;
+    else if (inBreak) consumed = breakStart - start;
+    else if (breakStart !== null && nowMin >= breakEnd) consumed = (nowMin - start) - breakDur;
+    else consumed = nowMin - start;
+    let pct = totalDur > 0 ? (consumed / totalDur * 100) : 0;
+    pct = Math.max(0, Math.min(100, pct));
+    $("gaugeFill").style.width = pct.toFixed(1) + "%";
+    $("gaugePct").textContent = Math.round(pct) + "%";
   }
 
   function tick() {
