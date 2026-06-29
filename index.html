@@ -103,6 +103,7 @@
     font-size: 16px;
     font-family: inherit;
   }
+  .settings input:disabled { opacity: .35; }
   .settings .hint { color: var(--muted); font-size: 12px; margin: 0; }
   .err { color: #f87171; font-size: 13px; margin: 4px 0 0; }
 </style>
@@ -134,7 +135,7 @@
       <input type="time" id="end" value="18:00">
     </div>
     <div class="row">
-      <label for="breakOn" style="width:auto"><input type="checkbox" id="breakOn"> 休憩</label>
+      <label for="breakOn" style="width:auto"><input type="checkbox" id="breakOn" checked> 休憩</label>
       <input type="time" id="breakStart" value="12:00">
       <span style="color:var(--muted)">〜</span>
       <input type="time" id="breakEnd" value="13:00">
@@ -153,9 +154,15 @@
   const saved = JSON.parse(localStorage.getItem("blockView") || "{}");
   if (saved.start) startEl.value = saved.start;
   if (saved.end) endEl.value = saved.end;
-  if (saved.breakOn) breakOnEl.checked = saved.breakOn;
+  if ("breakOn" in saved) breakOnEl.checked = saved.breakOn;
   if (saved.breakStart) breakStartEl.value = saved.breakStart;
   if (saved.breakEnd) breakEndEl.value = saved.breakEnd;
+
+  // 休憩オフのときは時刻欄を無効化（有効/無効を一目でわかるように）
+  function updateBreakUI() {
+    breakStartEl.disabled = !breakOnEl.checked;
+    breakEndEl.disabled = !breakOnEl.checked;
+  }
 
   function saveSettings() {
     localStorage.setItem("blockView", JSON.stringify({
@@ -164,7 +171,8 @@
     }));
   }
   [startEl, endEl, breakOnEl, breakStartEl, breakEndEl].forEach(el =>
-    el.addEventListener("change", () => { saveSettings(); render(); }));
+    el.addEventListener("change", () => { updateBreakUI(); saveSettings(); render(); }));
+  updateBreakUI();
 
   // "HH:MM" -> 分（その日の通算分）
   function toMin(str) {
